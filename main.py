@@ -5,8 +5,9 @@ import aiohttp
 import random
 import sqlite3
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
