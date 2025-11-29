@@ -18,11 +18,11 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 
 # Language mapping
 LANGUAGES = {
-    'english': 'Generate in English',
-    'hindi': 'Generate in Hindi', 
-    'nepali': 'Generate in Nepali',
-    'russian': 'Generate in Russian',
-    'hinglish': 'Generate in Hinglish (Hindi+English mix)'
+    'english': 'English',
+    'hindi': 'Hindi', 
+    'nepali': 'Nepali',
+    'russian': 'Russian',
+    'hinglish': 'Hinglish'
 }
 
 # Flask app for port
@@ -65,25 +65,26 @@ def check_rate_limit(user_id):
     conn = sqlite3.connect('ngl_bot.db')
     cursor = conn.cursor()
     
-    cursor.execute('SELECT last_reset FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT last_reset, message_count FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     
     if result:
         last_reset = datetime.fromisoformat(result[0])
+        message_count = result[1]
+        
+        # Reset if 24 hours passed
         if datetime.now() - last_reset > timedelta(hours=24):
             cursor.execute('UPDATE users SET message_count = 0, last_reset = ? WHERE user_id = ?', 
                          (datetime.now(), user_id))
             conn.commit()
-    
-    cursor.execute('SELECT message_count FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    
-    if not result:
-        cursor.execute('INSERT INTO users (user_id, message_count) VALUES (?, ?)', (user_id, 0))
+            current_count = 0
+        else:
+            current_count = message_count
+    else:
+        cursor.execute('INSERT INTO users (user_id, message_count, last_reset) VALUES (?, ?, ?)', 
+                     (user_id, 0, datetime.now()))
         conn.commit()
         current_count = 0
-    else:
-        current_count = result[0]
     
     conn.close()
     return current_count
@@ -96,14 +97,14 @@ def update_rate_limit(user_id, count):
     conn.close()
 
 # Generate message with Gemini API
-def generate_gemini_message(language="english", prompt="Generate a fun anonymous message"):
+def generate_gemini_message(language="english", count=1):
     try:
         language_prompts = {
-            'english': 'Generate a short, fun anonymous message in English.',
-            'hindi': 'Generate a short, fun anonymous message in Hindi.',
-            'nepali': 'Generate a short, fun anonymous message in Nepali.', 
-            'russian': 'Generate a short, fun anonymous message in Russian.',
-            'hinglish': 'Generate a short, fun anonymous message in Hinglish (Hindi+English mix).'
+            'english': 'Generate short, fun anonymous messages in English only.',
+            'hindi': 'Generate short, fun anonymous messages in Hindi only.',
+            'nepali': 'Generate short, fun anonymous messages in Nepali only.', 
+            'russian': 'Generate short, fun anonymous messages in Russian only.',
+            'hinglish': 'Generate short, fun anonymous messages in Hinglish only.'
         }
         
         base_prompt = language_prompts.get(language, language_prompts['english'])
@@ -112,7 +113,7 @@ def generate_gemini_message(language="english", prompt="Generate a fun anonymous
         payload = {
             "contents": [{
                 "parts": [{
-                    "text": f"{base_prompt} {prompt}. Keep it under 50 characters and make it casual."
+                    "text": f"{base_prompt} Generate {count} different messages. Keep them under 50 characters and make them casual."
                 }]
             }]
         }
@@ -124,11 +125,17 @@ def generate_gemini_message(language="english", prompt="Generate a fun anonymous
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+            full_text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+            # Split the response into individual messages
+            messages = [msg.strip() for msg in full_text.split('\n') if msg.strip()]
+            # If we got fewer messages than requested, generate the rest
+            while len(messages) < count:
+                messages.append(f"Fun message #{random.randint(1000,9999)}")
+            return messages[:count]
         else:
-            return f"Fun message #{random.randint(1000,9999)}"
+            return [f"Fun message #{random.randint(1000,9999)}" for _ in range(count)]
     except Exception as e:
-        return f"Random message {random.randint(1000,9999)}"
+        return [f"Random message {random.randint(1000,9999)}" for _ in range(count)]
 
 # Send message to NGL
 def send_ngl_message(ngl_link, message):
@@ -183,7 +190,6 @@ def track_message(user_id, ngl_link, message_text, status):
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
     welcome_text = """
 🤖 NGL Message Bot
 
@@ -194,14 +200,11 @@ Commands:
 
 Features:
 • Send messages to any NGL link
-• Auto-generate messages with AI
+• Auto-generate messages with AI (5 languages)
 • Custom messages support
-• Rate limiting
 • Message tracking
 
-Rate Limits:
-• 5 messages per session
-• 30 messages per 24 hours
+Need help? Contact admin!
 """
     
     await update.message.reply_text(welcome_text)
@@ -213,7 +216,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id != ADMIN_ID:
         current_count = check_rate_limit(user_id)
         if current_count >= 30:
-            await update.message.reply_text("❌ Rate limit exceeded! You can only send 30 messages per 24 hours.")
+            await update.message.reply_text("❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\nNeed help? Contact admin!")
             return
     
     keyboard = [[InlineKeyboardButton("🔗 Enter NGL Link", callback_data="enter_link")]]
@@ -264,36 +267,53 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("5 Messages", callback_data="count_5")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        language_name = LANGUAGES.get(language, language).replace('Generate in ', '')
-        await query.edit_message_text(f"Selected: {language_name}\nHow many messages to send? (Max 5)", reply_markup=reply_markup)
+        language_name = LANGUAGES.get(language, language)
+        await query.edit_message_text(f"Selected: {language_name}\nHow many messages to send?", reply_markup=reply_markup)
     
     elif data == "custom_message":
         context.user_data['message_type'] = 'custom'
-        await query.edit_message_text("Please send your custom message (max 5 messages):")
-        context.user_data['awaiting_custom'] = True
+        keyboard = [
+            [InlineKeyboardButton("1 Message", callback_data="custom_1")],
+            [InlineKeyboardButton("2 Messages", callback_data="custom_2")],
+            [InlineKeyboardButton("3 Messages", callback_data="custom_3")],
+            [InlineKeyboardButton("4 Messages", callback_data="custom_4")],
+            [InlineKeyboardButton("5 Messages", callback_data="custom_5")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("How many custom messages to send?", reply_markup=reply_markup)
+    
+    elif data.startswith("custom_"):
+        count = int(data.split("_")[1])
+        context.user_data['message_count'] = count
         context.user_data['custom_messages'] = []
+        context.user_data['awaiting_custom'] = True
+        context.user_data['current_custom_index'] = 0
+        
+        await query.edit_message_text(f"Please send your custom message 1/{count}:")
     
     elif data.startswith("count_"):
         count = int(data.split("_")[1])
-        
-        # Check session limit (5 messages max for non-admin)
-        if user_id != ADMIN_ID and count > 5:
-            await query.edit_message_text("❌ Maximum 5 messages per session!")
-            return
-            
         context.user_data['message_count'] = count
         
         if context.user_data.get('message_type') == 'ai':
             language = context.user_data.get('language', 'english')
-            messages = []
-            for i in range(count):
-                msg = generate_gemini_message(language=language)
-                messages.append(msg)
-            
+            messages = generate_gemini_message(language=language, count=count)
             context.user_data['messages'] = messages
             
+            # Forward AI messages to admin
+            admin_ai_msg = f"""
+🤖 AI Messages Generated:
+User: @{query.from_user.username if query.from_user.username else 'N/A'} ({user_id})
+Language: {language}
+Count: {count}
+"""
+            for i, msg in enumerate(messages):
+                admin_ai_msg += f"\n{i+1}. {msg}"
+            
+            await notify_admin(context, admin_ai_msg)
+            
             message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
-            language_name = LANGUAGES.get(language, language).replace('Generate in ', '')
+            language_name = LANGUAGES.get(language, language)
             keyboard = [
                 [InlineKeyboardButton("🔄 Regenerate All", callback_data="regenerate_all")],
                 [InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]
@@ -304,14 +324,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "regenerate_all":
         count = context.user_data.get('message_count', 1)
         language = context.user_data.get('language', 'english')
-        messages = []
-        for i in range(count):
-            msg = generate_gemini_message(language=language)
-            messages.append(msg)
-        
+        messages = generate_gemini_message(language=language, count=count)
         context.user_data['messages'] = messages
+        
+        # Forward regenerated messages to admin
+        admin_regenerate_msg = f"""
+🔄 AI Messages Regenerated:
+User: @{query.from_user.username if query.from_user.username else 'N/A'} ({query.from_user.id})
+Language: {language}
+Count: {count}
+"""
+        for i, msg in enumerate(messages):
+            admin_regenerate_msg += f"\n{i+1}. {msg}"
+        
+        await notify_admin(context, admin_regenerate_msg)
+        
         message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
-        language_name = LANGUAGES.get(language, language).replace('Generate in ', '')
+        language_name = LANGUAGES.get(language, language)
         keyboard = [
             [InlineKeyboardButton("🔄 Regenerate All", callback_data="regenerate_all")],
             [InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]
@@ -342,25 +371,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid NGL link. Please send a valid link starting with https://ngl.link/")
     
     elif context.user_data.get('awaiting_custom'):
-        # Check if reached max 5 messages
-        if len(context.user_data['custom_messages']) >= 5:
-            await update.message.reply_text("❌ Maximum 5 messages per session reached! Click send to proceed.")
-            return
-            
+        # Forward custom message to admin instantly
+        admin_custom_msg = f"""
+📝 Custom Message from User:
+User: @{update.effective_user.username if update.effective_user.username else 'N/A'} ({user_id})
+Message {context.user_data['current_custom_index'] + 1}/{context.user_data['message_count']}:
+{text}
+"""
+        await notify_admin(context, admin_custom_msg)
+        
         context.user_data['custom_messages'].append(text)
-        remaining = 5 - len(context.user_data['custom_messages'])
+        context.user_data['current_custom_index'] += 1
+        
+        remaining = context.user_data['message_count'] - len(context.user_data['custom_messages'])
         
         if remaining > 0:
-            await update.message.reply_text(f"Message added! You can add {remaining} more messages or send now.")
+            await update.message.reply_text(f"✅ Message {len(context.user_data['custom_messages'])}/{context.user_data['message_count']} added!\n\nSend next message ({remaining} remaining):")
         else:
             context.user_data['awaiting_custom'] = False
             context.user_data['messages'] = context.user_data['custom_messages']
-            context.user_data['message_count'] = len(context.user_data['messages'])
             
             message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
             keyboard = [[InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f"Your messages:\n\n{message_text}", reply_markup=reply_markup)
+            await update.message.reply_text(f"Your {len(context.user_data['messages'])} messages:\n\n{message_text}", reply_markup=reply_markup)
 
 # Send messages process
 async def send_messages_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -377,8 +411,10 @@ async def send_messages_process(update: Update, context: ContextTypes.DEFAULT_TY
     if user_id != ADMIN_ID:
         current_count = check_rate_limit(user_id)
         if current_count + len(messages) > 30:
-            await query.edit_message_text("❌ Rate limit exceeded! You can only send 30 messages per 24 hours.")
+            await query.edit_message_text("❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\nNeed help? Contact admin!")
             return
+        elif current_count >= 20:
+            await query.edit_message_text("⚠️ You've sent 20+ messages today. Slow down! You can send up to 30 messages per 24 hours.\n\nNeed help? Contact admin!")
     
     success_count = 0
     failed_count = 0
@@ -418,7 +454,7 @@ Use /track to see detailed status.
     await status_message.edit_text(result_text)
     
     admin_msg = f"""
-📨 New Message Batch:
+📨 Message Batch Completed:
 User: @{query.from_user.username if query.from_user.username else 'N/A'} ({user_id})
 Link: {ngl_link}
 Success: {success_count}/{len(messages)}
