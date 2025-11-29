@@ -5,6 +5,7 @@ import sqlite3
 import requests
 import threading
 import asyncio
+import schedule
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -489,7 +490,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
                 language_name = LANGUAGES.get(language, language)
                 
-                await update.message.reply_text(f"📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nSend schedule time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
+                await update.message.reply_text(f"📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
                 context.user_data['awaiting_schedule_time'] = True
             else:
                 context.user_data['custom_messages'] = []
@@ -502,9 +503,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Schedule time input
     elif context.user_data.get('awaiting_schedule_time'):
         try:
-            scheduled_time = datetime.strptime(text, '%Y-%m-%d %H:%M')
+            # Convert 12-hour format to 24-hour for processing
+            if 'AM' in text.upper() or 'PM' in text.upper():
+                scheduled_time = datetime.strptime(text, '%Y/%m/%d-%I:%M-%p')
+            else:
+                scheduled_time = datetime.strptime(text, '%Y/%m/%d-%H:%M')
+                
             if scheduled_time <= datetime.now():
-                await update.message.reply_text("❌ Schedule time must be in future!\n\nSend time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
+                await update.message.reply_text("❌ Schedule time must be in future!\n\nSend time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
                 return
             
             ngl_link = context.user_data.get('ngl_link')
@@ -521,7 +527,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📅 Schedule Report:
 • Link: {ngl_link}
 • Messages: {len(messages)}
-• Scheduled Time: {scheduled_time.strftime('%Y-%m-%d %H:%M')}
+• Scheduled Time: {scheduled_time.strftime('%Y/%m/%d-%I:%M-%p')}
 • Time Left: {hours_left}h {minutes_left}m
 • Status: ⏰ Scheduled
 
@@ -533,7 +539,7 @@ Messages will be sent automatically at the scheduled time.
             
             context.user_data.clear()
         except ValueError:
-            await update.message.reply_text("❌ Invalid time format!\n\nSend time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
+            await update.message.reply_text("❌ Invalid time format!\n\nSend time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
     
     # Regular link input
     elif context.user_data.get('awaiting_link'):
@@ -583,7 +589,7 @@ Message {context.user_data['current_custom_index'] + 1}/{context.user_data['mess
             
             if context.user_data.get('flow_type') == 'scheduler':
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
-                await update.message.reply_text(f"📅 Your {len(context.user_data['messages'])} messages:\n\n{message_text}\n\nSend schedule time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
+                await update.message.reply_text(f"📅 Your {len(context.user_data['messages'])} messages:\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
                 context.user_data['awaiting_schedule_time'] = True
             else:
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
@@ -666,6 +672,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('ngl_bot.db')
     cursor = conn.cursor()
     
+    # Get sent messages
     cursor.execute('''
         SELECT ngl_link, message_text, status, timestamp 
         FROM messages 
@@ -674,21 +681,49 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         LIMIT 10
     ''', (user_id,))
     
-    messages = cursor.fetchall()
+    sent_messages = cursor.fetchall()
+    
+    # Get scheduled messages
+    cursor.execute('''
+        SELECT ngl_link, messages, scheduled_time, created_at 
+        FROM scheduled_messages 
+        WHERE user_id = ? AND status = 'scheduled'
+        ORDER BY scheduled_time ASC
+    ''', (user_id,))
+    
+    scheduled_messages = cursor.fetchall()
     conn.close()
     
-    if not messages:
-        await update.message.reply_text("📭 No messages sent yet. Use /send to start sending messages.")
-        return
+    track_text = ""
     
-    track_text = "📊 Your Recent Messages:\n\n"
+    # Show scheduled messages first
+    if scheduled_messages:
+        track_text += "⏰ Scheduled Messages:\n\n"
+        for i, (link, messages_text, scheduled_time, created_at) in enumerate(scheduled_messages):
+            messages = messages_text.split('\n')
+            scheduled_dt = datetime.fromisoformat(scheduled_time)
+            time_left = scheduled_dt - datetime.now()
+            hours_left = max(0, int(time_left.total_seconds() // 3600))
+            minutes_left = max(0, int((time_left.total_seconds() % 3600) // 60))
+            
+            track_text += f"📅 {i+1}. {scheduled_dt.strftime('%Y/%m/%d-%I:%M-%p')}\n"
+            track_text += f"🔗 {link}\n"
+            track_text += f"📝 {len(messages)} messages\n"
+            track_text += f"⏱️ Time left: {hours_left}h {minutes_left}m\n"
+            track_text += f"🕐 Created: {datetime.fromisoformat(created_at).strftime('%m/%d %H:%M')}\n\n"
     
-    for i, (link, text, status, timestamp) in enumerate(messages):
-        status_icon = "✅" if status == "success" else "❌"
-        time_str = datetime.fromisoformat(timestamp).strftime("%m/%d %H:%M")
-        track_text += f"{status_icon} {time_str}\n"
-        track_text += f"Link: {link}\n"
-        track_text += f"Message: {text[:50]}...\n\n"
+    # Show sent messages
+    if sent_messages:
+        track_text += "📊 Recent Sent Messages:\n\n"
+        for i, (link, text, status, timestamp) in enumerate(sent_messages):
+            status_icon = "✅" if status == "success" else "❌"
+            time_str = datetime.fromisoformat(timestamp).strftime("%m/%d %H:%M")
+            track_text += f"{status_icon} {time_str}\n"
+            track_text += f"Link: {link}\n"
+            track_text += f"Message: {text[:50]}...\n\n"
+    
+    if not track_text:
+        track_text = "📭 No messages sent or scheduled yet. Use /send to start sending messages."
     
     await update.message.reply_text(track_text)
 
