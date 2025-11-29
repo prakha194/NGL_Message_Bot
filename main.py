@@ -1,9 +1,8 @@
 import os
-import asyncio
-import logging
-import aiohttp
+import time
 import random
 import sqlite3
+import requests
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -14,12 +13,6 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-
-# Setup logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 
 # Initialize database
 def init_db():
@@ -82,63 +75,58 @@ def update_rate_limit(user_id, count):
     conn.close()
 
 # Generate message with Gemini API
-async def generate_gemini_message(prompt="Generate a fun anonymous message"):
+def generate_gemini_message(prompt="Generate a fun anonymous message"):
     try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "contents": [{
-                    "parts": [{
-                        "text": f"Generate a short, fun anonymous message for NGL. {prompt}. Keep it under 50 characters and make it casual."
-                    }]
+        url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": f"Generate a short, fun anonymous message for NGL. {prompt}. Keep it under 50 characters and make it casual."
                 }]
-            }
-            
-            headers = {
-                "Content-Type": "application/json"
-            }
-            
-            url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
-            
-            async with session.post(url, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data['candidates'][0]['content']['parts'][0]['text'].strip()
-                else:
-                    return f"Fun message #{random.randint(1000,9999)}"
+            }]
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        else:
+            return f"Fun message #{random.randint(1000,9999)}"
     except Exception as e:
-        logging.error(f"Gemini API Error: {e}")
         return f"Random message {random.randint(1000,9999)}"
 
 # Send message to NGL
-async def send_ngl_message(ngl_link, message):
+def send_ngl_message(ngl_link, message):
     try:
         username = ngl_link.replace('https://ngl.link/', '').split('?')[0]
         
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "username": username,
-                "question": message,
-                "deviceId": f"web_{random.randint(100000,999999)}",
-                "gameSlug": "",
-                "referrer": ""
-            }
-            
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Content-Type": "application/json",
-                "Origin": "https://ngl.link",
-                "Referer": f"https://ngl.link/{username}"
-            }
-            
-            async with session.post(
-                "https://ngl.link/api/submit",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                return response.status == 200
+        payload = {
+            "username": username,
+            "question": message,
+            "deviceId": f"web_{random.randint(100000,999999)}",
+            "gameSlug": "",
+            "referrer": ""
+        }
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Content-Type": "application/json",
+            "Origin": "https://ngl.link",
+            "Referer": f"https://ngl.link/{username}"
+        }
+        
+        response = requests.post(
+            "https://ngl.link/api/submit",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+        return response.status_code == 200
     except Exception as e:
-        logging.error(f"NGL Send Error: {e}")
         return False
 
 # Admin notification
@@ -146,7 +134,7 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
     try:
         await context.bot.send_message(chat_id=ADMIN_ID, text=message)
     except Exception as e:
-        logging.error(f"Admin notify error: {e}")
+        print(f"Admin notify error: {e}")
 
 # Track message in database
 def track_message(user_id, ngl_link, message_text, status):
@@ -160,7 +148,7 @@ def track_message(user_id, ngl_link, message_text, status):
         conn.commit()
         conn.close()
     except Exception as e:
-        logging.error(f"Database error: {e}")
+        print(f"Database error: {e}")
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -250,7 +238,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('message_type') == 'ai':
             messages = []
             for i in range(count):
-                msg = await generate_gemini_message()
+                msg = generate_gemini_message()
                 messages.append(msg)
             
             context.user_data['messages'] = messages
@@ -267,7 +255,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = context.user_data.get('message_count', 1)
         messages = []
         for i in range(count):
-            msg = await generate_gemini_message()
+            msg = generate_gemini_message()
             messages.append(msg)
         
         context.user_data['messages'] = messages
@@ -342,10 +330,9 @@ async def send_messages_process(update: Update, context: ContextTypes.DEFAULT_TY
     
     for i, message in enumerate(messages):
         if i > 0:
-            delay = random.uniform(2, 5)
-            await asyncio.sleep(delay)
+            time.sleep(random.uniform(2, 5))
         
-        success = await send_ngl_message(ngl_link, message)
+        success = send_ngl_message(ngl_link, message)
         
         status = "success" if success else "failed"
         track_message(user_id, ngl_link, message, status)
@@ -417,11 +404,10 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(f"Error: {context.error}")
     error_msg = f"❌ Bot Error:\n{context.error}"
     await notify_admin(context, error_msg)
 
-async def main():
+def main():
     init_db()
     
     application = Application.builder().token(BOT_TOKEN).build()
@@ -433,7 +419,8 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(error_handler)
     
-    await application.run_polling()
+    print("Bot is running...")
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
