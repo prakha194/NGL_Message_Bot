@@ -7,6 +7,7 @@ import threading
 import asyncio
 import schedule
 from datetime import datetime, timedelta
+import pytz
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,6 +18,9 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+# Set your timezone (change to your timezone)
+TIMEZONE = pytz.timezone('Asia/Kolkata')  # Change to your timezone
 
 # Language mapping
 LANGUAGES = {
@@ -73,6 +77,10 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Get current time with timezone
+def get_current_time():
+    return datetime.now(TIMEZONE)
+
 # Rate limiting functions
 def check_rate_limit(user_id):
     conn = sqlite3.connect('ngl_bot.db')
@@ -86,16 +94,16 @@ def check_rate_limit(user_id):
         message_count = result[1]
         
         # Reset if 24 hours passed
-        if datetime.now() - last_reset > timedelta(hours=24):
+        if get_current_time() - last_reset > timedelta(hours=24):
             cursor.execute('UPDATE users SET message_count = 0, last_reset = ? WHERE user_id = ?', 
-                         (datetime.now(), user_id))
+                         (get_current_time(), user_id))
             conn.commit()
             current_count = 0
         else:
             current_count = message_count
     else:
         cursor.execute('INSERT INTO users (user_id, message_count, last_reset) VALUES (?, ?, ?)', 
-                     (user_id, 0, datetime.now()))
+                     (user_id, 0, get_current_time()))
         conn.commit()
         current_count = 0
     
@@ -226,7 +234,7 @@ def get_scheduled_messages():
         cursor = conn.cursor()
         cursor.execute('''
             SELECT * FROM scheduled_messages 
-            WHERE status = 'scheduled' AND scheduled_time <= datetime('now')
+            WHERE status = 'scheduled'
         ''')
         messages = cursor.fetchall()
         conn.close()
@@ -252,8 +260,11 @@ def update_scheduled_status(schedule_id, status):
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    welcome_text = """
+    current_time = get_current_time()
+    welcome_text = f"""
 🤖 NGL Message Bot
+
+🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
 
 Commands:
 /start - Show this welcome message
@@ -282,9 +293,10 @@ async def scheduler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ This command is for admin only!")
         return
     
+    current_time = get_current_time()
     keyboard = [[InlineKeyboardButton("🔗 Enter NGL Link", callback_data="scheduler_enter_link")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📅 Schedule Messages - Enter NGL link:", reply_markup=reply_markup)
+    await update.message.reply_text(f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n📅 Schedule Messages - Enter NGL link:", reply_markup=reply_markup)
 
 # Send command handler
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -490,7 +502,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
                 language_name = LANGUAGES.get(language, language)
                 
-                await update.message.reply_text(f"📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
+                current_time = get_current_time()
+                await update.message.reply_text(f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
                 context.user_data['awaiting_schedule_time'] = True
             else:
                 context.user_data['custom_messages'] = []
@@ -505,11 +518,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             # Convert 12-hour format to 24-hour for processing
             if 'AM' in text.upper() or 'PM' in text.upper():
-                scheduled_time = datetime.strptime(text, '%Y/%m/%d-%I:%M-%p')
+                scheduled_time_naive = datetime.strptime(text, '%Y/%m/%d-%I:%M-%p')
             else:
-                scheduled_time = datetime.strptime(text, '%Y/%m/%d-%H:%M')
+                scheduled_time_naive = datetime.strptime(text, '%Y/%m/%d-%H:%M')
+            
+            # Make it timezone aware
+            scheduled_time = TIMEZONE.localize(scheduled_time_naive)
+            current_time = get_current_time()
                 
-            if scheduled_time <= datetime.now():
+            if scheduled_time <= current_time:
                 await update.message.reply_text("❌ Schedule time must be in future!\n\nSend time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
                 return
             
@@ -517,7 +534,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages = context.user_data.get('messages', [])
             
             if save_scheduled_message(user_id, ngl_link, messages, scheduled_time):
-                time_left = scheduled_time - datetime.now()
+                time_left = scheduled_time - current_time
                 hours_left = int(time_left.total_seconds() // 3600)
                 minutes_left = int((time_left.total_seconds() % 3600) // 60)
                 
@@ -528,6 +545,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Link: {ngl_link}
 • Messages: {len(messages)}
 • Scheduled Time: {scheduled_time.strftime('%Y/%m/%d-%I:%M-%p')}
+• Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
 • Time Left: {hours_left}h {minutes_left}m
 • Status: ⏰ Scheduled
 
@@ -589,7 +607,8 @@ Message {context.user_data['current_custom_index'] + 1}/{context.user_data['mess
             
             if context.user_data.get('flow_type') == 'scheduler':
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
-                await update.message.reply_text(f"📅 Your {len(context.user_data['messages'])} messages:\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
+                current_time = get_current_time()
+                await update.message.reply_text(f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n📅 Your {len(context.user_data['messages'])} messages:\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
                 context.user_data['awaiting_schedule_time'] = True
             else:
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
@@ -656,18 +675,20 @@ Use /track to see detailed status.
     
     # Notify admin only if not admin user
     if user_id != ADMIN_ID:
+        current_time = get_current_time()
         admin_msg = f"""
 📨 Message Batch Completed:
 User: @{query.from_user.username if query.from_user.username else 'N/A'} ({user_id})
 Link: {ngl_link}
 Success: {success_count}/{len(messages)}
-Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}
 """
         await notify_admin(context, admin_msg, user_id)
 
 # Track command
 async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    current_time = get_current_time()
     
     conn = sqlite3.connect('ngl_bot.db')
     cursor = conn.cursor()
@@ -694,15 +715,15 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scheduled_messages = cursor.fetchall()
     conn.close()
     
-    track_text = ""
+    track_text = f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n"
     
     # Show scheduled messages first
     if scheduled_messages:
         track_text += "⏰ Scheduled Messages:\n\n"
         for i, (link, messages_text, scheduled_time, created_at) in enumerate(scheduled_messages):
             messages = messages_text.split('\n')
-            scheduled_dt = datetime.fromisoformat(scheduled_time)
-            time_left = scheduled_dt - datetime.now()
+            scheduled_dt = datetime.fromisoformat(scheduled_time).astimezone(TIMEZONE)
+            time_left = scheduled_dt - current_time
             hours_left = max(0, int(time_left.total_seconds() // 3600))
             minutes_left = max(0, int((time_left.total_seconds() % 3600) // 60))
             
@@ -710,20 +731,20 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             track_text += f"🔗 {link}\n"
             track_text += f"📝 {len(messages)} messages\n"
             track_text += f"⏱️ Time left: {hours_left}h {minutes_left}m\n"
-            track_text += f"🕐 Created: {datetime.fromisoformat(created_at).strftime('%m/%d %H:%M')}\n\n"
+            track_text += f"🕐 Created: {datetime.fromisoformat(created_at).astimezone(TIMEZONE).strftime('%m/%d %H:%M')}\n\n"
     
     # Show sent messages
     if sent_messages:
         track_text += "📊 Recent Sent Messages:\n\n"
         for i, (link, text, status, timestamp) in enumerate(sent_messages):
             status_icon = "✅" if status == "success" else "❌"
-            time_str = datetime.fromisoformat(timestamp).strftime("%m/%d %H:%M")
+            time_str = datetime.fromisoformat(timestamp).astimezone(TIMEZONE).strftime("%m/%d %H:%M")
             track_text += f"{status_icon} {time_str}\n"
             track_text += f"Link: {link}\n"
             track_text += f"Message: {text[:50]}...\n\n"
     
-    if not track_text:
-        track_text = "📭 No messages sent or scheduled yet. Use /send to start sending messages."
+    if track_text.strip() == f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}":
+        track_text += "📭 No messages sent or scheduled yet. Use /send to start sending messages."
     
     await update.message.reply_text(track_text)
 
@@ -731,33 +752,38 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_scheduled_messages(application):
     while True:
         try:
+            current_time = get_current_time()
             scheduled_messages = get_scheduled_messages()
             for msg in scheduled_messages:
                 msg_id, user_id, ngl_link, messages_text, scheduled_time, status, created_at = msg
-                messages = messages_text.split('\n')
+                scheduled_dt = datetime.fromisoformat(scheduled_time).astimezone(TIMEZONE)
                 
-                # Send messages
-                success_count = 0
-                for i, message in enumerate(messages):
-                    if i > 0:
-                        time.sleep(random.uniform(2, 5))
-                    success = send_ngl_message(ngl_link, message)
-                    if success:
-                        success_count += 1
-                    track_message(user_id, ngl_link, message, "success" if success else "failed")
-                
-                # Update status
-                update_scheduled_status(msg_id, 'completed')
-                
-                # Notify admin
-                report_text = f"""
+                # Check if it's time to send (using timezone)
+                if scheduled_dt <= current_time:
+                    messages = messages_text.split('\n')
+                    
+                    # Send messages
+                    success_count = 0
+                    for i, message in enumerate(messages):
+                        if i > 0:
+                            time.sleep(random.uniform(2, 5))
+                        success = send_ngl_message(ngl_link, message)
+                        if success:
+                            success_count += 1
+                        track_message(user_id, ngl_link, message, "success" if success else "failed")
+                    
+                    # Update status
+                    update_scheduled_status(msg_id, 'completed')
+                    
+                    # Notify admin
+                    report_text = f"""
 ⏰ Scheduled Messages Sent:
 • Link: {ngl_link}
 • Messages: {len(messages)}
 • Successful: {success_count}
-• Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+• Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
 """
-                await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
+                    await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
             
             await asyncio.sleep(60)  # Check every minute
         except Exception as e:
@@ -793,9 +819,10 @@ def main():
     application.add_error_handler(error_handler)
     
     # Start scheduler
-    application.run_polling()
+    asyncio.create_task(process_scheduled_messages(application))
     
     print("Bot is running...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
