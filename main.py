@@ -4,7 +4,7 @@ import random
 import sqlite3
 import requests
 import threading
-import schedule
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -337,17 +337,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "ai_message":
         context.user_data['message_type'] = 'ai'
         keyboard = [
-            [InlineKeyboardButton("1 Message", callback_data="count_1")],
-            [InlineKeyboardButton("2 Messages", callback_data="count_2")],
-            [InlineKeyboardButton("3 Messages", callback_data="count_3")],
-            [InlineKeyboardButton("4 Messages", callback_data="count_4")],
-            [InlineKeyboardButton("5 Messages", callback_data="count_5")]
+            [InlineKeyboardButton("🇺🇸 English", callback_data="lang_english")],
+            [InlineKeyboardButton("🇮🇳 Hindi", callback_data="lang_hindi")],
+            [InlineKeyboardButton("🇳🇵 Nepali", callback_data="lang_nepali")],
+            [InlineKeyboardButton("🇷🇺 Russian", callback_data="lang_russian")],
+            [InlineKeyboardButton("🔀 Hinglish", callback_data="lang_hinglish")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("How many AI messages to send?", reply_markup=reply_markup)
+        await query.edit_message_text("Choose language for AI messages:", reply_markup=reply_markup)
     
     elif data == "scheduler_ai_message":
         context.user_data['message_type'] = 'ai'
+        keyboard = [
+            [InlineKeyboardButton("🇺🇸 English", callback_data="scheduler_lang_english")],
+            [InlineKeyboardButton("🇮🇳 Hindi", callback_data="scheduler_lang_hindi")],
+            [InlineKeyboardButton("🇳🇵 Nepali", callback_data="scheduler_lang_nepali")],
+            [InlineKeyboardButton("🇷🇺 Russian", callback_data="scheduler_lang_russian")],
+            [InlineKeyboardButton("🔀 Hinglish", callback_data="scheduler_lang_hinglish")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("📅 Choose language for AI messages:", reply_markup=reply_markup)
+    
+    elif data.startswith("scheduler_lang_"):
+        language = data.split("_")[2]
+        context.user_data['language'] = language
         await query.edit_message_text("📅 How many AI messages to schedule?\n\nSend the number (e.g., 3, 5, 10, etc.):")
         context.user_data['awaiting_scheduler_count'] = True
     
@@ -372,20 +385,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         language = data.split("_")[1]
         context.user_data['language'] = language
         
-        if context.user_data.get('flow_type') == 'scheduler':
-            await query.edit_message_text("📅 How many AI messages to schedule?\n\nSend the number (e.g., 3, 5, 10, etc.):")
-            context.user_data['awaiting_scheduler_count'] = True
-        else:
-            keyboard = [
-                [InlineKeyboardButton("1 Message", callback_data="count_1")],
-                [InlineKeyboardButton("2 Messages", callback_data="count_2")],
-                [InlineKeyboardButton("3 Messages", callback_data="count_3")],
-                [InlineKeyboardButton("4 Messages", callback_data="count_4")],
-                [InlineKeyboardButton("5 Messages", callback_data="count_5")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            language_name = LANGUAGES.get(language, language)
-            await query.edit_message_text(f"Selected: {language_name}\nHow many messages to send?", reply_markup=reply_markup)
+        keyboard = [
+            [InlineKeyboardButton("1 Message", callback_data="count_1")],
+            [InlineKeyboardButton("2 Messages", callback_data="count_2")],
+            [InlineKeyboardButton("3 Messages", callback_data="count_3")],
+            [InlineKeyboardButton("4 Messages", callback_data="count_4")],
+            [InlineKeyboardButton("5 Messages", callback_data="count_5")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        language_name = LANGUAGES.get(language, language)
+        await query.edit_message_text(f"Selected: {language_name}\nHow many messages to send?", reply_markup=reply_markup)
     
     elif data.startswith("custom_"):
         count = int(data.split("_")[1])
@@ -421,16 +430,12 @@ Count: {count}
             message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
             language_name = LANGUAGES.get(language, language)
             
-            if context.user_data.get('flow_type') == 'scheduler':
-                await query.edit_message_text(f"📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nNow send schedule time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
-                context.user_data['awaiting_schedule_time'] = True
-            else:
-                keyboard = [
-                    [InlineKeyboardButton("🔄 Regenerate All", callback_data="regenerate_all")],
-                    [InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(f"Language: {language_name}\n\nGenerated messages:\n\n{message_text}", reply_markup=reply_markup)
+            keyboard = [
+                [InlineKeyboardButton("🔄 Regenerate All", callback_data="regenerate_all")],
+                [InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Language: {language_name}\n\nGenerated messages:\n\n{message_text}", reply_markup=reply_markup)
     
     elif data == "regenerate_all":
         count = context.user_data.get('message_count', 1)
@@ -461,11 +466,7 @@ Count: {count}
         await query.edit_message_text(f"Language: {language_name}\n\nRegenerated messages:\n\n{message_text}", reply_markup=reply_markup)
     
     elif data == "send_messages":
-        if context.user_data.get('flow_type') == 'scheduler':
-            await query.edit_message_text("Send schedule time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
-            context.user_data['awaiting_schedule_time'] = True
-        else:
-            await send_messages_process(update, context)
+        await send_messages_process(update, context)
 
 # Handle text messages
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,15 +481,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['awaiting_scheduler_count'] = False
             
             if context.user_data.get('message_type') == 'ai':
-                keyboard = [
-                    [InlineKeyboardButton("🇺🇸 English", callback_data="lang_english")],
-                    [InlineKeyboardButton("🇮🇳 Hindi", callback_data="lang_hindi")],
-                    [InlineKeyboardButton("🇳🇵 Nepali", callback_data="lang_nepali")],
-                    [InlineKeyboardButton("🇷🇺 Russian", callback_data="lang_russian")],
-                    [InlineKeyboardButton("🔀 Hinglish", callback_data="lang_hinglish")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(f"📅 Schedule {count} AI messages - Choose language:", reply_markup=reply_markup)
+                # Generate AI messages immediately after getting count
+                language = context.user_data.get('language', 'english')
+                messages = generate_gemini_message(language=language, count=count)
+                context.user_data['messages'] = messages
+                
+                message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
+                language_name = LANGUAGES.get(language, language)
+                
+                await update.message.reply_text(f"📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nSend schedule time (Format: YYYY-MM-DD HH:MM)\nExample: 2024-12-25 14:30")
+                context.user_data['awaiting_schedule_time'] = True
             else:
                 context.user_data['custom_messages'] = []
                 context.user_data['awaiting_custom'] = True
