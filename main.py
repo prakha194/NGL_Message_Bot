@@ -798,9 +798,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await notify_admin(context, error_msg, 0)
 
-async def start_scheduler(application):
-    asyncio.create_task(process_scheduled_messages(application))
-
 def main():
     init_db()
     
@@ -818,10 +815,9 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(error_handler)
     
-    # Start scheduler
-    asyncio.create_task(process_scheduled_messages(application))
-    
     print("Bot is running...")
+    
+    # Start the bot and scheduler together
     application.run_polling()
 
 if __name__ == "__main__":
