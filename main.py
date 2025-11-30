@@ -95,12 +95,12 @@ def track_bot_user(user_id, username, first_name):
     except Exception as e:
         print(f"Track user error: {e}")
 
-# Get all bot users for broadcast
+# Get all bot users for broadcast (excluding admin)
 def get_all_bot_users():
     try:
         conn = sqlite3.connect('ngl_bot.db')
         cursor = conn.cursor()
-        cursor.execute('SELECT user_id FROM bot_users')
+        cursor.execute('SELECT user_id FROM bot_users WHERE user_id != ?', (ADMIN_ID,))
         users = [row[0] for row in cursor.fetchall()]
         conn.close()
         return users
@@ -238,8 +238,12 @@ def track_message(user_id, ngl_link, message_text, status):
         print(f"Database error: {e}")
 
 # Check if user is member of group and channel
-async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id=None):
+    if not user_id:
+        if hasattr(update, 'callback_query'):
+            user_id = update.callback_query.from_user.id
+        else:
+            user_id = update.effective_user.id
     
     try:
         # Check group membership
@@ -251,22 +255,72 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_member_channel = member_channel.status in ['member', 'administrator', 'creator']
         
         if is_member_group and is_member_channel:
-            await update.message.reply_text("✅ You are a member of both the group and channel! You can now use the bot.")
+            # User is member of both - send thanks message
+            if hasattr(update, 'callback_query'):
+                await update.callback_query.edit_message_text(
+                    "🎉 Thank you for supporting NGL Bot!\n\n"
+                    "✅ You are now verified and can use all bot features.\n"
+                    "Use /send to start sending messages!"
+                )
+            else:
+                await update.message.reply_text(
+                    "🎉 Thank you for supporting NGL Bot!\n\n"
+                    "✅ You are now verified and can use all bot features.\n"
+                    "Use /send to start sending messages!"
+                )
+            return True
         else:
+            # User is not member of both
             missing = []
             if not is_member_group:
-                missing.append(f"Group: {GROUP_ID}")
+                missing.append("Group")
             if not is_member_channel:
-                missing.append(f"Channel: {CHANNEL_ID}")
+                missing.append("Channel")
             
-            await update.message.reply_text(
-                f"❌ Please join the following to use the bot:\n\n" +
-                "\n".join(missing) +
-                f"\n\nAfter joining, click 'Check' again."
-            )
+            message_text = "❌ Please join both our channel and group to use the bot:\n\n"
+            if missing:
+                message_text += f"Missing: {', '.join(missing)}\n\n"
+            message_text += "👉 Click the buttons below to join, then click 'Check' to verify."
+            
+            keyboard = [
+                [InlineKeyboardButton("🔗 @KiddingARENA", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+                [InlineKeyboardButton("🔗 @premiumlinkers", url=f"https://t.me/{GROUP_ID[1:]}")],
+                [InlineKeyboardButton("✅ Check", callback_data="check_membership")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if hasattr(update, 'callback_query'):
+                await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(message_text, reply_markup=reply_markup)
+            return False
             
     except Exception as e:
-        await update.message.reply_text("❌ Error checking membership. Please try again later.")
+        error_msg = "❌ Error checking membership. Please try again later."
+        if hasattr(update, 'callback_query'):
+            await update.callback_query.edit_message_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+        return False
+
+# Check membership before allowing send command
+async def check_membership_before_send(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    if user_id == ADMIN_ID:
+        return True  # Admin bypasses membership check
+    
+    try:
+        # Check group membership
+        member_group = await context.bot.get_chat_member(GROUP_ID, user_id)
+        is_member_group = member_group.status in ['member', 'administrator', 'creator']
+        
+        # Check channel membership
+        member_channel = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        is_member_channel = member_channel.status in ['member', 'administrator', 'creator']
+        
+        return is_member_group and is_member_channel
+    except Exception as e:
+        print(f"Membership check error: {e}")
+        return False
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,21 +356,20 @@ Need help? Contact admin!
 
     await update.message.reply_text(welcome_text)
     
-    # Show membership check buttons with 3 options
-    keyboard = [
-        [InlineKeyboardButton("🔗 @KiddingARENA", url=f"https://t.me/{CHANNEL_ID[1:]}")],
-        [InlineKeyboardButton("🔗 @premiumlinkers", url=f"https://t.me/{GROUP_ID[1:]}")],
-        [InlineKeyboardButton("✅ Check", callback_data="check_membership")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "📋 Please join our channel and group to use the bot:\n\n" +
-        f"• Channel: {CHANNEL_ID}\n" +
-        f"• Group: {GROUP_ID}\n\n" +
-        "After joining, click 'Check' to verify.",
-        reply_markup=reply_markup
-    )
+    # Show membership check buttons with 3 options (only for non-admin users)
+    if user_id != ADMIN_ID:
+        keyboard = [
+            [InlineKeyboardButton("🔗 @KiddingARENA", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+            [InlineKeyboardButton("🔗 @premiumlinkers", url=f"https://t.me/{GROUP_ID[1:]}")],
+            [InlineKeyboardButton("✅ Check", callback_data="check_membership")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📋 To use this bot, please join our channel and group:\n\n"
+            "👉 Click the buttons below to join, then click 'Check' to verify.",
+            reply_markup=reply_markup
+        )
 
 # Broadcast command (admin only)
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -364,7 +417,7 @@ async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("↩️ Please forward the message you want to broadcast:")
 
 # Send broadcast to all users - FIXED VERSION
-async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, broadcast_type, content=None, photo_file_id=None, forward_message=None):
+async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, broadcast_type, content=None, photo_file_id=None, forward_from_chat_id=None, forward_message_id=None):
     try:
         users = get_all_bot_users()
         success_count = 0
@@ -384,8 +437,8 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, broadcast_type, con
                 elif broadcast_type == 'forward':
                     await context.bot.forward_message(
                         chat_id=user_id, 
-                        from_chat_id=forward_message['chat_id'], 
-                        message_id=forward_message['message_id']
+                        from_chat_id=forward_from_chat_id, 
+                        message_id=forward_message_id
                     )
                 
                 success_count += 1
@@ -439,12 +492,16 @@ async def handle_broadcast_content(update: Update, context: ContextTypes.DEFAULT
                 await update.message.reply_text("❌ Please send a photo with caption.")
                 
         elif broadcast_type == 'forward':
+            # Fixed forward message handling
             if update.message.forward_from_chat:
-                forward_message = {
-                    'chat_id': update.message.forward_from_chat.id,
-                    'message_id': update.message.message_id
-                }
-                await send_broadcast(context, 'forward', forward_message=forward_message)
+                forward_from_chat_id = update.message.forward_from_chat.id
+                forward_message_id = update.message.message_id
+                await send_broadcast(
+                    context, 
+                    'forward', 
+                    forward_from_chat_id=forward_from_chat_id, 
+                    forward_message_id=forward_message_id
+                )
             else:
                 await update.message.reply_text("❌ Please forward a message from a channel or group.")
         
@@ -458,6 +515,26 @@ async def handle_broadcast_content(update: Update, context: ContextTypes.DEFAULT
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
+    # Check membership for non-admin users
+    if user_id != ADMIN_ID:
+        is_member = await check_membership_before_send(user_id, context)
+        if not is_member:
+            keyboard = [
+                [InlineKeyboardButton("🔗 @KiddingARENA", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+                [InlineKeyboardButton("🔗 @premiumlinkers", url=f"https://t.me/{GROUP_ID[1:]}")],
+                [InlineKeyboardButton("✅ Check", callback_data="check_membership")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "❌ Access denied!\n\n"
+                "👉 Please join both our channel and group to use this feature.\n"
+                "Click the buttons below to join, then click 'Check' to verify.",
+                reply_markup=reply_markup
+            )
+            return
+
+    # Rate limit check for non-admin users
     if user_id != ADMIN_ID:
         current_count = check_rate_limit(user_id)
         remaining = 30 - current_count
@@ -497,13 +574,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Regular send flow
     if data == "enter_link":
+        # Check membership for non-admin users before allowing to send
+        if user_id != ADMIN_ID:
+            is_member = await check_membership_before_send(user_id, context)
+            if not is_member:
+                keyboard = [
+                    [InlineKeyboardButton("🔗 @KiddingARENA", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+                    [InlineKeyboardButton("🔗 @premiumlinkers", url=f"https://t.me/{GROUP_ID[1:]}")],
+                    [InlineKeyboardButton("✅ Check", callback_data="check_membership")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    "❌ Access denied!\n\n"
+                    "👉 Please join both our channel and group to use this feature.\n"
+                    "Click the buttons below to join, then click 'Check' to verify.",
+                    reply_markup=reply_markup
+                )
+                return
+        
         context.user_data['awaiting_link'] = True
         await query.edit_message_text("Please send me the NGL link (e.g., https://ngl.link/username)")
 
     elif data == "check_membership":
-        await check_membership(update, context)
+        await check_membership(update, context, user_id)
 
     elif data == "message_type":
+        context.user_data['awaiting_link'] = False
         keyboard = [
             [InlineKeyboardButton("🤖 AI Generated", callback_data="ai_message")],
             [InlineKeyboardButton("✏️ Custom Message", callback_data="custom_message")]
