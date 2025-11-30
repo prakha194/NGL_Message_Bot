@@ -416,6 +416,48 @@ async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAUL
         context.user_data['broadcast_type'] = 'forward'
         await query.edit_message_text("↩️ Please forward the message you want to broadcast:")
 
+# Send broadcast to all users - FIXED VERSION
+async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, broadcast_type, content=None, photo_file_id=None, forward_from_chat_id=None, forward_message_id=None):
+    try:
+        users = get_all_bot_users()
+        success_count = 0
+        failed_count = 0
+        
+        # Send initial status message
+        status_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 Starting broadcast to {len(users)} users...")
+        
+        for user_id in users:
+            try:
+                if broadcast_type == 'text':
+                    await context.bot.send_message(chat_id=user_id, text=content)
+                elif broadcast_type == 'photo':
+                    await context.bot.send_photo(chat_id=user_id, photo=photo_file_id, caption=content)
+                elif broadcast_type == 'both':
+                    await context.bot.send_photo(chat_id=user_id, photo=photo_file_id, caption=content)
+                elif broadcast_type == 'forward':
+                    await context.bot.forward_message(
+                        chat_id=user_id, 
+                        from_chat_id=forward_from_chat_id, 
+                        message_id=forward_message_id
+                    )
+                
+                success_count += 1
+                await asyncio.sleep(0.1)  # Small delay to avoid rate limits
+                
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to send to {user_id}: {e}")
+        
+        # Update status message with results
+        await context.bot.edit_message_text(
+            chat_id=ADMIN_ID,
+            message_id=status_msg.message_id,
+            text=f"✅ Broadcast completed!\n\n• Successful: {success_count}\n• Failed: {failed_count}\n• Total: {len(users)}"
+        )
+        
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Broadcast failed: {e}")
+
 # Handle broadcast content - FIXED VERSION
 async def handle_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
