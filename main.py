@@ -5,7 +5,6 @@ import sqlite3
 import requests
 import threading
 import asyncio
-import schedule
 from datetime import datetime, timedelta
 import pytz
 from telegram import Update
@@ -19,8 +18,12 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-# Set your timezone (change to your timezone)
-TIMEZONE = pytz.timezone('Asia/Kolkata')  # Change to your timezone
+# Group and Channel IDs for membership check
+GROUP_1_ID = "@KiddingARENA"  # Replace with your group 1 username
+CHANNEL_ID = "@premiumlinkers"  # Replace with your channel username
+
+# Set your timezone
+TIMEZONE = pytz.timezone('Asia/Kolkata')
 
 # Language mapping
 LANGUAGES = {
@@ -64,14 +67,11 @@ def init_db():
         )
     ''')
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS scheduled_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            ngl_link TEXT,
-            messages TEXT,
-            scheduled_time TIMESTAMP,
-            status TEXT DEFAULT 'scheduled',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS bot_users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
@@ -80,6 +80,33 @@ def init_db():
 # Get current time with timezone
 def get_current_time():
     return datetime.now(TIMEZONE)
+
+# Track bot users
+def track_bot_user(user_id, username, first_name):
+    try:
+        conn = sqlite3.connect('ngl_bot.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO bot_users (user_id, username, first_name) 
+            VALUES (?, ?, ?)
+        ''', (user_id, username, first_name))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Track user error: {e}")
+
+# Get all bot users for broadcast
+def get_all_bot_users():
+    try:
+        conn = sqlite3.connect('ngl_bot.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id FROM bot_users')
+        users = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return users
+    except Exception as e:
+        print(f"Get users error: {e}")
+        return []
 
 # Rate limiting functions
 def check_rate_limit(user_id):
@@ -210,70 +237,52 @@ def track_message(user_id, ngl_link, message_text, status):
     except Exception as e:
         print(f"Database error: {e}")
 
-# Save scheduled message
-def save_scheduled_message(user_id, ngl_link, messages, scheduled_time):
+# Check if user is member of groups and channel
+async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
     try:
-        conn = sqlite3.connect('ngl_bot.db')
-        cursor = conn.cursor()
-        messages_json = '\n'.join(messages)
+        # Check group 1 membership
+        member_group1 = await context.bot.get_chat_member(GROUP_1_ID, user_id)
+        is_member_group1 = member_group1.status in ['member', 'administrator', 'creator']
         
-        # Store in database in proper SQLite datetime format (local time)
-        scheduled_time_str = scheduled_time.strftime('%Y-%m-%d %H:%M:%S')
+        # Check group 2 membership
+        member_group2 = await context.bot.get_chat_member(GROUP_2_ID, user_id)
+        is_member_group2 = member_group2.status in ['member', 'administrator', 'creator']
         
-        cursor.execute(
-            'INSERT INTO scheduled_messages (user_id, ngl_link, messages, scheduled_time) VALUES (?, ?, ?, ?)',
-            (user_id, ngl_link, messages_json, scheduled_time_str)
-        )
-        conn.commit()
-        conn.close()
+        # Check channel membership
+        member_channel = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        is_member_channel = member_channel.status in ['member', 'administrator', 'creator']
         
-        print(f"💾 Saved scheduled message for {scheduled_time_str}")
-        return True
+        if is_member_group1 and is_member_group2 and is_member_channel:
+            await update.message.reply_text("✅ You are a member of all required groups and channel! You can now use the bot.")
+        else:
+            missing = []
+            if not is_member_group1:
+                missing.append(f"Group 1: {GROUP_1_ID}")
+            if not is_member_group2:
+                missing.append(f"Group 2: {GROUP_2_ID}")
+            if not is_member_channel:
+                missing.append(f"Channel: {CHANNEL_ID}")
+            
+            await update.message.reply_text(
+                f"❌ Please join the following to use the bot:\n\n" +
+                "\n".join(missing) +
+                f"\n\nAfter joining, click 'Check Now' again."
+            )
+            
     except Exception as e:
-        print(f"Save scheduled error: {e}")
-        return False
-
-# Get scheduled messages
-def get_scheduled_messages():
-    try:
-        conn = sqlite3.connect('ngl_bot.db')
-        cursor = conn.cursor()
-        
-        # Get current time in the correct format for SQLite comparison
-        current_time = get_current_time()
-        current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-        
-        cursor.execute('''
-            SELECT * FROM scheduled_messages 
-            WHERE status = 'scheduled' AND scheduled_time <= ?
-        ''', (current_time_str,))
-        
-        messages = cursor.fetchall()
-        conn.close()
-        
-        print(f"🔍 Database query: Found {len(messages)} messages to send (current time: {current_time_str})")
-        return messages
-    except Exception as e:
-        print(f"Get scheduled error: {e}")
-        return []
-
-# Update scheduled message status
-def update_scheduled_status(schedule_id, status):
-    try:
-        conn = sqlite3.connect('ngl_bot.db')
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE scheduled_messages SET status = ? WHERE id = ?',
-            (status, schedule_id)
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Update scheduled error: {e}")
+        await update.message.reply_text("❌ Error checking membership. Please try again later.")
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    
+    # Track user in database
+    track_bot_user(user_id, username, first_name)
+    
     current_time = get_current_time()
     welcome_text = f"""
 🤖 NGL Message Bot
@@ -295,22 +304,109 @@ Need help? Contact admin!
 """
 
     if user_id == ADMIN_ID:
-        welcome_text += "\n\n👑 Admin Commands:\n/scheduler - Schedule messages"
+        welcome_text += "\n\n👑 Admin Commands:\n/broadcast - Broadcast message to all users"
 
     await update.message.reply_text(welcome_text)
+    
+    # Show membership check buttons for all users
+    keyboard = [
+        [InlineKeyboardButton("🔗 Group 1", url=f"https://t.me/{GROUP_1_ID[1:]}")],
+        [InlineKeyboardButton("🔗 Group 2", url=f"https://t.me/{GROUP_2_ID[1:]}")],
+        [InlineKeyboardButton("🔗 Channel", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+        [InlineKeyboardButton("✅ Check Now", callback_data="check_membership")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📋 Please join our groups and channel to use the bot:\n\n" +
+        f"• Group 1: {GROUP_1_ID}\n" +
+        f"• Group 2: {GROUP_2_ID}\n" +
+        f"• Channel: {CHANNEL_ID}\n\n" +
+        "After joining, click 'Check Now' to verify.",
+        reply_markup=reply_markup
+    )
 
-# Scheduler command (admin only)
-async def scheduler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Broadcast command (admin only)
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id != ADMIN_ID:
         await update.message.reply_text("❌ This command is for admin only!")
         return
 
-    current_time = get_current_time()
-    keyboard = [[InlineKeyboardButton("🔗 Enter NGL Link", callback_data="scheduler_enter_link")]]
+    keyboard = [
+        [InlineKeyboardButton("📝 Text Message", callback_data="broadcast_text")],
+        [InlineKeyboardButton("🖼️ Photo", callback_data="broadcast_photo")],
+        [InlineKeyboardButton("📝 + 🖼️ Both", callback_data="broadcast_both")],
+        [InlineKeyboardButton("↩️ Forward Message", callback_data="broadcast_forward")]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n📅 Schedule Messages - Enter NGL link:", reply_markup=reply_markup)
+    await update.message.reply_text("📢 Choose broadcast type:", reply_markup=reply_markup)
+
+# Handle broadcast callbacks
+async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user_id = query.from_user.id
+
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ This command is for admin only!")
+        return
+
+    if data == "broadcast_text":
+        context.user_data['broadcast_type'] = 'text'
+        await query.edit_message_text("📝 Please send the text message to broadcast:")
+        
+    elif data == "broadcast_photo":
+        context.user_data['broadcast_type'] = 'photo'
+        await query.edit_message_text("🖼️ Please send the photo with caption (if any):")
+        
+    elif data == "broadcast_both":
+        context.user_data['broadcast_type'] = 'both'
+        await query.edit_message_text("📝 Please send the photo with caption:")
+        
+    elif data == "broadcast_forward":
+        context.user_data['broadcast_type'] = 'forward'
+        await query.edit_message_text("↩️ Please forward the message you want to broadcast:")
+
+# Send broadcast to all users
+async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_type, content=None):
+    try:
+        users = get_all_bot_users()
+        success_count = 0
+        failed_count = 0
+        
+        await update.message.reply_text(f"📢 Starting broadcast to {len(users)} users...")
+        
+        for user_id in users:
+            try:
+                if broadcast_type == 'text':
+                    await context.bot.send_message(chat_id=user_id, text=content)
+                elif broadcast_type == 'photo':
+                    await context.bot.send_photo(chat_id=user_id, photo=update.message.photo[-1].file_id, caption=content)
+                elif broadcast_type == 'both':
+                    await context.bot.send_photo(chat_id=user_id, photo=update.message.photo[-1].file_id, caption=content)
+                elif broadcast_type == 'forward':
+                    await context.bot.forward_message(chat_id=user_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
+                
+                success_count += 1
+                await asyncio.sleep(0.1)  # Small delay to avoid rate limits
+                
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to send to {user_id}: {e}")
+        
+        await update.message.reply_text(
+            f"✅ Broadcast completed!\n\n" +
+            f"• Successful: {success_count}\n" +
+            f"• Failed: {failed_count}\n" +
+            f"• Total: {len(users)}"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Broadcast failed: {e}")
 
 # Send command handler
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -318,6 +414,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id != ADMIN_ID:
         current_count = check_rate_limit(user_id)
+        remaining = 30 - current_count
         if current_count >= 30:
             # Get time remaining until reset
             conn = sqlite3.connect('ngl_bot.db')
@@ -337,6 +434,8 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\nNeed help? Contact admin!")
             return
+        else:
+            await update.message.reply_text(f"📊 You have {remaining} messages remaining today.")
 
     keyboard = [[InlineKeyboardButton("🔗 Enter NGL Link", callback_data="enter_link")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -353,13 +452,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Regular send flow
     if data == "enter_link":
         context.user_data['awaiting_link'] = True
-        context.user_data['flow_type'] = 'instant'
         await query.edit_message_text("Please send me the NGL link (e.g., https://ngl.link/username)")
 
-    elif data == "scheduler_enter_link":
-        context.user_data['awaiting_link'] = True
-        context.user_data['flow_type'] = 'scheduler'
-        await query.edit_message_text("📅 Schedule Messages\n\nPlease send NGL link (e.g., https://ngl.link/username)")
+    elif data == "check_membership":
+        await check_membership(update, context)
 
     elif data == "message_type":
         keyboard = [
@@ -368,14 +464,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("Choose message type:", reply_markup=reply_markup)
-
-    elif data == "scheduler_message_type":
-        keyboard = [
-            [InlineKeyboardButton("🤖 AI Generated", callback_data="scheduler_ai_message")],
-            [InlineKeyboardButton("✏️ Custom Message", callback_data="scheduler_custom_message")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("📅 Choose message type for scheduling:", reply_markup=reply_markup)
 
     elif data == "ai_message":
         context.user_data['message_type'] = 'ai'
@@ -389,55 +477,40 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("Choose language for AI messages:", reply_markup=reply_markup)
 
-    elif data == "scheduler_ai_message":
-        context.user_data['message_type'] = 'ai'
-        keyboard = [
-            [InlineKeyboardButton("🇺🇸 English", callback_data="scheduler_lang_english")],
-            [InlineKeyboardButton("🇮🇳 Hindi", callback_data="scheduler_lang_hindi")],
-            [InlineKeyboardButton("🇳🇵 Nepali", callback_data="scheduler_lang_nepali")],
-            [InlineKeyboardButton("🇷🇺 Russian", callback_data="scheduler_lang_russian")],
-            [InlineKeyboardButton("🔀 Hinglish", callback_data="scheduler_lang_hinglish")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("📅 Choose language for AI messages:", reply_markup=reply_markup)
-
-    elif data.startswith("scheduler_lang_"):
-        language = data.split("_")[2]
-        context.user_data['language'] = language
-        await query.edit_message_text("📅 How many AI messages to schedule?\n\nSend the number (e.g., 3, 5, 10, etc.):")
-        context.user_data['awaiting_scheduler_count'] = True
-
-    elif data == "custom_message":
-        context.user_data['message_type'] = 'custom'
-        keyboard = [
-            [InlineKeyboardButton("1 Message", callback_data="custom_1")],
-            [InlineKeyboardButton("2 Messages", callback_data="custom_2")],
-            [InlineKeyboardButton("3 Messages", callback_data="custom_3")],
-            [InlineKeyboardButton("4 Messages", callback_data="custom_4")],
-            [InlineKeyboardButton("5 Messages", callback_data="custom_5")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("How many custom messages to send?", reply_markup=reply_markup)
-
-    elif data == "scheduler_custom_message":
-        context.user_data['message_type'] = 'custom'
-        await query.edit_message_text("📅 How many custom messages to schedule?\n\nSend the number (e.g., 3, 5, 10, etc.):")
-        context.user_data['awaiting_scheduler_count'] = True
-
     elif data.startswith("lang_"):
         language = data.split("_")[1]
         context.user_data['language'] = language
 
-        keyboard = [
-            [InlineKeyboardButton("1 Message", callback_data="count_1")],
-            [InlineKeyboardButton("2 Messages", callback_data="count_2")],
-            [InlineKeyboardButton("3 Messages", callback_data="count_3")],
-            [InlineKeyboardButton("4 Messages", callback_data="count_4")],
-            [InlineKeyboardButton("5 Messages", callback_data="count_5")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        language_name = LANGUAGES.get(language, language)
-        await query.edit_message_text(f"Selected: {language_name}\nHow many messages to send?", reply_markup=reply_markup)
+        if user_id == ADMIN_ID:
+            await query.edit_message_text("📝 How many AI messages to send?\n\nSend the number (1-200):")
+            context.user_data['awaiting_count'] = True
+        else:
+            keyboard = [
+                [InlineKeyboardButton("1 Message", callback_data="count_1")],
+                [InlineKeyboardButton("2 Messages", callback_data="count_2")],
+                [InlineKeyboardButton("3 Messages", callback_data="count_3")],
+                [InlineKeyboardButton("4 Messages", callback_data="count_4")],
+                [InlineKeyboardButton("5 Messages", callback_data="count_5")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            language_name = LANGUAGES.get(language, language)
+            await query.edit_message_text(f"Selected: {language_name}\nHow many messages to send?", reply_markup=reply_markup)
+
+    elif data == "custom_message":
+        context.user_data['message_type'] = 'custom'
+        if user_id == ADMIN_ID:
+            await query.edit_message_text("📝 How many custom messages to send?\n\nSend the number (1-200):")
+            context.user_data['awaiting_count'] = True
+        else:
+            keyboard = [
+                [InlineKeyboardButton("1 Message", callback_data="custom_1")],
+                [InlineKeyboardButton("2 Messages", callback_data="custom_2")],
+                [InlineKeyboardButton("3 Messages", callback_data="custom_3")],
+                [InlineKeyboardButton("4 Messages", callback_data="custom_4")],
+                [InlineKeyboardButton("5 Messages", callback_data="custom_5")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("How many custom messages to send?", reply_markup=reply_markup)
 
     elif data.startswith("custom_"):
         count = int(data.split("_")[1])
@@ -511,20 +584,44 @@ Count: {count}
     elif data == "send_messages":
         await send_messages_process(update, context)
 
+    # Handle broadcast callbacks
+    elif data.startswith("broadcast_"):
+        await handle_broadcast_callback(update, context)
+
 # Handle text messages
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    # Scheduler count input
-    if context.user_data.get('awaiting_scheduler_count'):
+    # Handle broadcast messages
+    if context.user_data.get('broadcast_type'):
+        broadcast_type = context.user_data['broadcast_type']
+        
+        if broadcast_type == 'text':
+            await send_broadcast(update, context, 'text', text)
+        elif broadcast_type in ['photo', 'both'] and update.message.photo:
+            caption = text if text else None
+            await send_broadcast(update, context, broadcast_type, caption)
+        elif broadcast_type == 'forward' and update.message.forward_from_chat:
+            await send_broadcast(update, context, 'forward')
+        else:
+            await update.message.reply_text("❌ Please send the correct content type.")
+        
+        context.user_data.clear()
+        return
+
+    # Admin custom count input
+    if context.user_data.get('awaiting_count') and user_id == ADMIN_ID:
         try:
             count = int(text)
+            if count < 1 or count > 200:
+                await update.message.reply_text("❌ Please enter a number between 1 and 200:")
+                return
+                
             context.user_data['message_count'] = count
-            context.user_data['awaiting_scheduler_count'] = False
+            context.user_data['awaiting_count'] = False
 
             if context.user_data.get('message_type') == 'ai':
-                # Generate AI messages immediately after getting count
                 language = context.user_data.get('language', 'english')
                 messages = generate_gemini_message(language=language, count=count)
                 context.user_data['messages'] = messages
@@ -532,62 +629,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
                 language_name = LANGUAGES.get(language, language)
 
-                current_time = get_current_time()
-                await update.message.reply_text(f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n📅 AI Messages Generated ({language_name}):\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
-                context.user_data['awaiting_schedule_time'] = True
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Regenerate All", callback_data="regenerate_all")],
+                    [InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(f"Language: {language_name}\n\nGenerated messages:\n\n{message_text}", reply_markup=reply_markup)
             else:
                 context.user_data['custom_messages'] = []
                 context.user_data['awaiting_custom'] = True
                 context.user_data['current_custom_index'] = 0
-                await update.message.reply_text(f"📅 Please send custom message 1/{count}:")
+                await update.message.reply_text(f"Please send your custom message 1/{count}:")
         except ValueError:
-            await update.message.reply_text("❌ Please send a valid number (e.g., 3, 5, 10):")
-
-    # Schedule time input
-    elif context.user_data.get('awaiting_schedule_time'):
-        try:
-            # Convert 12-hour format to 24-hour for processing
-            if 'AM' in text.upper() or 'PM' in text.upper():
-                scheduled_time_naive = datetime.strptime(text, '%Y/%m/%d-%I:%M-%p')
-            else:
-                scheduled_time_naive = datetime.strptime(text, '%Y/%m/%d-%H:%M')
-
-            # Make it timezone aware
-            scheduled_time = TIMEZONE.localize(scheduled_time_naive)
-            current_time = get_current_time()
-
-            if scheduled_time <= current_time:
-                await update.message.reply_text("❌ Schedule time must be in future!\n\nSend time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
-                return
-
-            ngl_link = context.user_data.get('ngl_link')
-            messages = context.user_data.get('messages', [])
-
-            if save_scheduled_message(user_id, ngl_link, messages, scheduled_time):
-                time_left = scheduled_time - current_time
-                hours_left = int(time_left.total_seconds() // 3600)
-                minutes_left = int((time_left.total_seconds() % 3600) // 60)
-
-                report_text = f"""
-✅ Messages Scheduled Successfully!
-
-📅 Schedule Report:
-• Link: {ngl_link}
-• Messages: {len(messages)}
-• Scheduled Time: {scheduled_time.strftime('%Y/%m/%d-%I:%M-%p')}
-• Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
-• Time Left: {hours_left}h {minutes_left}m
-• Status: ⏰ Scheduled
-
-Messages will be sent automatically at the scheduled time.
-"""
-                await update.message.reply_text(report_text)
-            else:
-                await update.message.reply_text("❌ Failed to schedule messages!")
-
-            context.user_data.clear()
-        except ValueError:
-            await update.message.reply_text("❌ Invalid time format!\n\nSend time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
+            await update.message.reply_text("❌ Please send a valid number (1-200):")
 
     # Regular link input
     elif context.user_data.get('awaiting_link'):
@@ -595,20 +649,12 @@ Messages will be sent automatically at the scheduled time.
             context.user_data['ngl_link'] = text
             context.user_data['awaiting_link'] = False
 
-            if context.user_data.get('flow_type') == 'scheduler':
-                keyboard = [
-                    [InlineKeyboardButton("🤖 AI Generated", callback_data="scheduler_ai_message")],
-                    [InlineKeyboardButton("✏️ Custom Message", callback_data="scheduler_custom_message")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text("📅 Choose message type for scheduling:", reply_markup=reply_markup)
-            else:
-                keyboard = [
-                    [InlineKeyboardButton("🤖 AI Generated", callback_data="ai_message")],
-                    [InlineKeyboardButton("✏️ Custom Message", callback_data="custom_message")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text("Great! Now choose message type:", reply_markup=reply_markup)
+            keyboard = [
+                [InlineKeyboardButton("🤖 AI Generated", callback_data="ai_message")],
+                [InlineKeyboardButton("✏️ Custom Message", callback_data="custom_message")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Great! Now choose message type:", reply_markup=reply_markup)
         else:
             await update.message.reply_text("❌ Invalid NGL link. Please send a valid link starting with https://ngl.link/")
 
@@ -635,16 +681,10 @@ Message {context.user_data['current_custom_index'] + 1}/{context.user_data['mess
             context.user_data['awaiting_custom'] = False
             context.user_data['messages'] = context.user_data['custom_messages']
 
-            if context.user_data.get('flow_type') == 'scheduler':
-                message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
-                current_time = get_current_time()
-                await update.message.reply_text(f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n📅 Your {len(context.user_data['messages'])} messages:\n\n{message_text}\n\nSend schedule time (Format: YYYY/MM/DD-HH:MM-AM/PM)\nExample: 2024/12/25-02:30-PM")
-                context.user_data['awaiting_schedule_time'] = True
-            else:
-                message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
-                keyboard = [[InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(f"Your {len(context.user_data['messages'])} messages:\n\n{message_text}", reply_markup=reply_markup)
+            message_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(context.user_data['messages'])])
+            keyboard = [[InlineKeyboardButton("🚀 Send Messages", callback_data="send_messages")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(f"Your {len(context.user_data['messages'])} messages:\n\n{message_text}", reply_markup=reply_markup)
 
 # Send messages process
 async def send_messages_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -680,7 +720,8 @@ async def send_messages_process(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.edit_message_text("❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\nNeed help? Contact admin!")
             return
         elif current_count >= 20:
-            await query.edit_message_text("⚠️ You've sent 20+ messages today. Slow down! You can send up to 30 messages per 24 hours.\n\nNeed help? Contact admin!")
+            remaining = 30 - current_count
+            await query.edit_message_text(f"⚠️ You've sent {current_count} messages today. You have {remaining} messages remaining.\n\nSlow down! You can send up to 30 messages per 24 hours.\n\nNeed help? Contact admin!")
 
     success_count = 0
     failed_count = 0
@@ -749,35 +790,9 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ''', (user_id,))
 
     sent_messages = cursor.fetchall()
-
-    # Get scheduled messages
-    cursor.execute('''
-        SELECT ngl_link, messages, scheduled_time, created_at 
-        FROM scheduled_messages 
-        WHERE user_id = ? AND status = 'scheduled'
-        ORDER BY scheduled_time ASC
-    ''', (user_id,))
-
-    scheduled_messages = cursor.fetchall()
     conn.close()
 
     track_text = f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}\n\n"
-
-    # Show scheduled messages first
-    if scheduled_messages:
-        track_text += "⏰ Scheduled Messages:\n\n"
-        for i, (link, messages_text, scheduled_time_str, created_at) in enumerate(scheduled_messages):
-            messages = messages_text.split('\n')
-            scheduled_dt = datetime.strptime(scheduled_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=TIMEZONE)
-            time_left = scheduled_dt - current_time
-            hours_left = max(0, int(time_left.total_seconds() // 3600))
-            minutes_left = max(0, int((time_left.total_seconds() % 3600) // 60))
-
-            track_text += f"📅 {i+1}. {scheduled_dt.strftime('%Y/%m/%d-%I:%M-%p')}\n"
-            track_text += f"🔗 {link}\n"
-            track_text += f"📝 {len(messages)} messages\n"
-            track_text += f"⏱️ Time left: {hours_left}h {minutes_left}m\n"
-            track_text += f"🕐 Created: {datetime.fromisoformat(created_at).astimezone(TIMEZONE).strftime('%m/%d %H:%M')}\n\n"
 
     # Show sent messages
     if sent_messages:
@@ -788,60 +803,10 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             track_text += f"{status_icon} {time_str}\n"
             track_text += f"Link: {link}\n"
             track_text += f"Message: {text[:50]}...\n\n"
-
-    if track_text.strip() == f"🕐 Current Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}":
-        track_text += "📭 No messages sent or scheduled yet. Use /send to start sending messages."
+    else:
+        track_text += "📭 No messages sent yet. Use /send to start sending messages."
 
     await update.message.reply_text(track_text)
-
-# Process scheduled messages
-async def process_scheduled_messages(application):
-    print("🚀 SCHEDULER STARTED - Checking for scheduled messages every 30 seconds")
-    while True:
-        try:
-            current_time = get_current_time()
-            scheduled_messages = get_scheduled_messages()
-            
-            print(f"⏰ Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Found {len(scheduled_messages)} messages to send")
-            
-            for msg in scheduled_messages:
-                msg_id, user_id, ngl_link, messages_text, scheduled_time_str, status, created_at = msg
-                
-                scheduled_dt = datetime.strptime(scheduled_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=TIMEZONE)
-                
-                print(f"📅 Message {msg_id}: Scheduled for {scheduled_dt.strftime('%Y-%m-%d %H:%M:%S')}, Current: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-                messages = messages_text.split('\n')
-
-                # Send messages
-                success_count = 0
-                for i, message in enumerate(messages):
-                    if i > 0:
-                        time.sleep(random.uniform(2, 5))
-                    success = send_ngl_message(ngl_link, message)
-                    if success:
-                        success_count += 1
-                    track_message(user_id, ngl_link, message, "success" if success else "failed")
-
-                # Update status
-                update_scheduled_status(msg_id, 'completed')
-
-                # Notify admin
-                report_text = f"""
-⏰ Scheduled Messages Sent:
-• Link: {ngl_link}
-• Messages: {len(messages)}
-• Successful: {success_count}
-• Scheduled Time: {scheduled_dt.strftime('%Y/%m/%d-%I:%M-%p')}
-• Actual Send Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
-"""
-                await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
-                print(f"✅ Scheduled messages sent successfully: {success_count}/{len(messages)}")
-
-            await asyncio.sleep(30)
-        except Exception as e:
-            print(f"Scheduled messages error: {e}")
-            await asyncio.sleep(30)
 
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -864,14 +829,14 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("send", send_command))
     application.add_handler(CommandHandler("track", track_command))
-    application.add_handler(CommandHandler("scheduler", scheduler_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_text))
+    application.add_handler(MessageHandler(filters.FORWARDED, handle_text))
     application.add_error_handler(error_handler)
 
-    print("Bot is running...")  
-
-    # Start the bot
+    print("Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
