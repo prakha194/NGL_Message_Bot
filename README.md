@@ -143,6 +143,8 @@ For support and questions:
 - Contact the admin through the bot
 - Ensure you've joined the required channels
 
+## [**Chat now Click Here 😁**](https://t.me/NGL_Message_bot)
+
 ## 📄 License
 
 This project is licensed under the MIT License
