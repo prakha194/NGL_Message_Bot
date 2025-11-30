@@ -1,4 +1,4 @@
-[**Chat Now Click Here 😁**](https://t.me/NGL_Message_bot)
+## [**Chat Now Click Here 😁**](https://t.me/NGL_Message_bot)
 
 # 🤖 NGL Telegram Assistant Bot
 
