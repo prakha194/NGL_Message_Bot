@@ -850,10 +850,7 @@ def main():
 
     print("Bot is running...")
 
-    # Start scheduler in background
-    asyncio.create_task(process_scheduled_messages(application))
-
-    # Start the bot
+    # Start the bot - this will create the event loop
     application.run_polling()
 
 if __name__ == "__main__":
