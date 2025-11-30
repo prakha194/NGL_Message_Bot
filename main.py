@@ -18,9 +18,9 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-# Group and Channel IDs for membership check
-GROUP_1_ID = "@KiddingARENA"  # Replace with your group 1 username
-CHANNEL_ID = "@premiumlinkers"  # Replace with your channel username
+# Group and Channel IDs for membership check - UPDATE THESE WITH YOUR ACTUAL LINKS
+GROUP_ID = "@premiumlinkers"  # Replace with your group username
+CHANNEL_ID = "@KiddingARENA"  # Replace with your channel username
 
 # Set your timezone
 TIMEZONE = pytz.timezone('Asia/Kolkata')
@@ -237,38 +237,32 @@ def track_message(user_id, ngl_link, message_text, status):
     except Exception as e:
         print(f"Database error: {e}")
 
-# Check if user is member of groups and channel
+# Check if user is member of group and channel
 async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        # Check group 1 membership
-        member_group1 = await context.bot.get_chat_member(GROUP_1_ID, user_id)
-        is_member_group1 = member_group1.status in ['member', 'administrator', 'creator']
-        
-        # Check group 2 membership
-        member_group2 = await context.bot.get_chat_member(GROUP_2_ID, user_id)
-        is_member_group2 = member_group2.status in ['member', 'administrator', 'creator']
+        # Check group membership
+        member_group = await context.bot.get_chat_member(GROUP_ID, user_id)
+        is_member_group = member_group.status in ['member', 'administrator', 'creator']
         
         # Check channel membership
         member_channel = await context.bot.get_chat_member(CHANNEL_ID, user_id)
         is_member_channel = member_channel.status in ['member', 'administrator', 'creator']
         
-        if is_member_group1 and is_member_group2 and is_member_channel:
-            await update.message.reply_text("✅ You are a member of all required groups and channel! You can now use the bot.")
+        if is_member_group and is_member_channel:
+            await update.message.reply_text("✅ You are a member of both the group and channel! You can now use the bot.")
         else:
             missing = []
-            if not is_member_group1:
-                missing.append(f"Group 1: {GROUP_1_ID}")
-            if not is_member_group2:
-                missing.append(f"Group 2: {GROUP_2_ID}")
+            if not is_member_group:
+                missing.append(f"Group: {GROUP_ID}")
             if not is_member_channel:
                 missing.append(f"Channel: {CHANNEL_ID}")
             
             await update.message.reply_text(
                 f"❌ Please join the following to use the bot:\n\n" +
                 "\n".join(missing) +
-                f"\n\nAfter joining, click 'Check Now' again."
+                f"\n\nAfter joining, click 'Check' again."
             )
             
     except Exception as e:
@@ -308,21 +302,19 @@ Need help? Contact admin!
 
     await update.message.reply_text(welcome_text)
     
-    # Show membership check buttons for all users
+    # Show membership check buttons with 3 options
     keyboard = [
-        [InlineKeyboardButton("🔗 Group 1", url=f"https://t.me/{GROUP_1_ID[1:]}")],
-        [InlineKeyboardButton("🔗 Group 2", url=f"https://t.me/{GROUP_2_ID[1:]}")],
-        [InlineKeyboardButton("🔗 Channel", url=f"https://t.me/{CHANNEL_ID[1:]}")],
-        [InlineKeyboardButton("✅ Check Now", callback_data="check_membership")]
+        [InlineKeyboardButton("🔗 @KiddingARENA", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+        [InlineKeyboardButton("🔗 @premiumlinkers", url=f"https://t.me/{GROUP_ID[1:]}")],
+        [InlineKeyboardButton("✅ Check", callback_data="check_membership")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "📋 Please join our groups and channel to use the bot:\n\n" +
-        f"• Group 1: {GROUP_1_ID}\n" +
-        f"• Group 2: {GROUP_2_ID}\n" +
-        f"• Channel: {CHANNEL_ID}\n\n" +
-        "After joining, click 'Check Now' to verify.",
+        "📋 Please join our channel and group to use the bot:\n\n" +
+        f"• Channel: {CHANNEL_ID}\n" +
+        f"• Group: {GROUP_ID}\n\n" +
+        "After joining, click 'Check' to verify.",
         reply_markup=reply_markup
     )
 
@@ -371,25 +363,30 @@ async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAUL
         context.user_data['broadcast_type'] = 'forward'
         await query.edit_message_text("↩️ Please forward the message you want to broadcast:")
 
-# Send broadcast to all users
-async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_type, content=None):
+# Send broadcast to all users - FIXED VERSION
+async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, broadcast_type, content=None, photo_file_id=None, forward_message=None):
     try:
         users = get_all_bot_users()
         success_count = 0
         failed_count = 0
         
-        await update.message.reply_text(f"📢 Starting broadcast to {len(users)} users...")
+        # Send initial status message
+        status_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 Starting broadcast to {len(users)} users...")
         
         for user_id in users:
             try:
                 if broadcast_type == 'text':
                     await context.bot.send_message(chat_id=user_id, text=content)
                 elif broadcast_type == 'photo':
-                    await context.bot.send_photo(chat_id=user_id, photo=update.message.photo[-1].file_id, caption=content)
+                    await context.bot.send_photo(chat_id=user_id, photo=photo_file_id, caption=content)
                 elif broadcast_type == 'both':
-                    await context.bot.send_photo(chat_id=user_id, photo=update.message.photo[-1].file_id, caption=content)
+                    await context.bot.send_photo(chat_id=user_id, photo=photo_file_id, caption=content)
                 elif broadcast_type == 'forward':
-                    await context.bot.forward_message(chat_id=user_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
+                    await context.bot.forward_message(
+                        chat_id=user_id, 
+                        from_chat_id=forward_message['chat_id'], 
+                        message_id=forward_message['message_id']
+                    )
                 
                 success_count += 1
                 await asyncio.sleep(0.1)  # Small delay to avoid rate limits
@@ -398,12 +395,61 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, bro
                 failed_count += 1
                 print(f"Failed to send to {user_id}: {e}")
         
-        await update.message.reply_text(
-            f"✅ Broadcast completed!\n\n" +
-            f"• Successful: {success_count}\n" +
-            f"• Failed: {failed_count}\n" +
-            f"• Total: {len(users)}"
+        # Update status message with results
+        await context.bot.edit_message_text(
+            chat_id=ADMIN_ID,
+            message_id=status_msg.message_id,
+            text=f"✅ Broadcast completed!\n\n• Successful: {success_count}\n• Failed: {failed_count}\n• Total: {len(users)}"
         )
+        
+    except Exception as e:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"❌ Broadcast failed: {e}")
+
+# Handle broadcast content
+async def handle_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ This command is for admin only!")
+        return
+
+    broadcast_type = context.user_data.get('broadcast_type')
+    
+    if not broadcast_type:
+        return
+
+    try:
+        if broadcast_type == 'text':
+            await send_broadcast(context, 'text', content=update.message.text)
+            
+        elif broadcast_type == 'photo':
+            if update.message.photo:
+                photo_file_id = update.message.photo[-1].file_id
+                caption = update.message.caption if update.message.caption else None
+                await send_broadcast(context, 'photo', content=caption, photo_file_id=photo_file_id)
+            else:
+                await update.message.reply_text("❌ Please send a photo.")
+                
+        elif broadcast_type == 'both':
+            if update.message.photo:
+                photo_file_id = update.message.photo[-1].file_id
+                caption = update.message.caption if update.message.caption else None
+                await send_broadcast(context, 'both', content=caption, photo_file_id=photo_file_id)
+            else:
+                await update.message.reply_text("❌ Please send a photo with caption.")
+                
+        elif broadcast_type == 'forward':
+            if update.message.forward_from_chat:
+                forward_message = {
+                    'chat_id': update.message.forward_from_chat.id,
+                    'message_id': update.message.message_id
+                }
+                await send_broadcast(context, 'forward', forward_message=forward_message)
+            else:
+                await update.message.reply_text("❌ Please forward a message from a channel or group.")
+        
+        # Clear broadcast data
+        context.user_data.pop('broadcast_type', None)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Broadcast failed: {e}")
@@ -595,19 +641,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle broadcast messages
     if context.user_data.get('broadcast_type'):
-        broadcast_type = context.user_data['broadcast_type']
-        
-        if broadcast_type == 'text':
-            await send_broadcast(update, context, 'text', text)
-        elif broadcast_type in ['photo', 'both'] and update.message.photo:
-            caption = text if text else None
-            await send_broadcast(update, context, broadcast_type, caption)
-        elif broadcast_type == 'forward' and update.message.forward_from_chat:
-            await send_broadcast(update, context, 'forward')
-        else:
-            await update.message.reply_text("❌ Please send the correct content type.")
-        
-        context.user_data.clear()
+        await handle_broadcast_content(update, context)
         return
 
     # Admin custom count input
@@ -831,9 +865,12 @@ def main():
     application.add_handler(CommandHandler("track", track_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Add handler for broadcast content (photos, forwarded messages, etc.)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_text))
     application.add_handler(MessageHandler(filters.FORWARDED, handle_text))
+    
     application.add_error_handler(error_handler)
 
     print("Bot is running...")
