@@ -416,7 +416,7 @@ async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAUL
         context.user_data['broadcast_type'] = 'forward'
         await query.edit_message_text("↩️ Please forward the message you want to broadcast:")
 
-# Handle broadcast content
+# Handle broadcast content - FIXED VERSION
 async def handle_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -450,29 +450,13 @@ async def handle_broadcast_content(update: Update, context: ContextTypes.DEFAULT
                 await update.message.reply_text("❌ Please send a photo with caption.")
                 
         elif broadcast_type == 'forward':
-            # Fixed forward message handling - use the correct attributes
-            if update.message.forward_origin:
-                # Get the original chat ID and message ID from forward origin
-                forward_from_chat_id = None
-                forward_message_id = update.message.message_id
-                
-                # Check different types of forward origins
-                if hasattr(update.message.forward_origin, 'chat'):
-                    forward_from_chat_id = update.message.forward_origin.chat.id
-                elif hasattr(update.message.forward_origin, 'sender_chat'):
-                    forward_from_chat_id = update.message.forward_origin.sender_chat.id
-                
-                if forward_from_chat_id:
-                    await send_broadcast(
-                        context, 
-                        'forward', 
-                        forward_from_chat_id=forward_from_chat_id, 
-                        forward_message_id=forward_message_id
-                    )
-                else:
-                    await update.message.reply_text("❌ Could not identify the source of the forwarded message.")
-            else:
-                await update.message.reply_text("❌ Please forward a message from a channel or group.")
+            # SIMPLE FIX: Just forward the exact message that admin forwarded
+            await send_broadcast(
+                context, 
+                'forward', 
+                forward_from_chat_id=update.message.chat_id,
+                forward_message_id=update.message.message_id
+            )
         
         # Clear broadcast data
         context.user_data.pop('broadcast_type', None)
