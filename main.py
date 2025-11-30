@@ -852,7 +852,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error handler failed: {e}")
 
-    def main():
+def main():
     init_db()
 
     # Start Flask server in a separate thread
@@ -876,3 +876,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Start the bot
     application.run_polling()
+
+if __name__ == "__main__":
+    main()
