@@ -52,10 +52,8 @@ ADMIN_ID=your_telegram_user_id
 ### Installation Steps
 1. **Clone the repository**
    ```bash
-   git clone 
-https://github.com/prakha194/NGL_Message_Bot.git 
-   cd ngl-telegram-bot
-   ```
+   git clone https://github.com/prakha194/NGL_Message_Bot.git
+   cd NGL_Message_Bot
 
 2. **Install dependencies**
    ```bash
