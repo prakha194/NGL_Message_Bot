@@ -796,6 +796,7 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Process scheduled messages
 async def process_scheduled_messages(application):
+    print("🚀 SCHEDULER STARTED - Checking for scheduled messages every 30 seconds")
     while True:
         try:
             current_time = get_current_time()
@@ -806,10 +807,9 @@ async def process_scheduled_messages(application):
             for msg in scheduled_messages:
                 msg_id, user_id, ngl_link, messages_text, scheduled_time_str, status, created_at = msg
                 
-                # Convert stored time back to datetime for display
                 scheduled_dt = datetime.strptime(scheduled_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=TIMEZONE)
                 
-                print(f"🚀 Processing message scheduled for: {scheduled_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"📅 Message {msg_id}: Scheduled for {scheduled_dt.strftime('%Y-%m-%d %H:%M:%S')}, Current: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
                 messages = messages_text.split('\n')
 
@@ -838,20 +838,21 @@ async def process_scheduled_messages(application):
                 await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
                 print(f"✅ Scheduled messages sent successfully: {success_count}/{len(messages)}")
 
-            await asyncio.sleep(30)  # Check every 30 seconds
+            await asyncio.sleep(30)
         except Exception as e:
             print(f"Scheduled messages error: {e}")
             await asyncio.sleep(30)
 
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    error_msg = f"❌ Bot Error:\n{context.error}"
-    if update.effective_user:
-        await notify_admin(context, error_msg, update.effective_user.id)
-    else:
-        await notify_admin(context, error_msg, 0)
+    try:
+        error_msg = f"❌ Bot Error:\n{context.error}"
+        user_id = update.effective_user.id if update and update.effective_user else "Unknown"
+        await notify_admin(context, error_msg, user_id)
+    except Exception as e:
+        print(f"Error handler failed: {e}")
 
-def main():
+    def main():
     init_db()
 
     # Start Flask server in a separate thread
@@ -870,8 +871,8 @@ def main():
 
     print("Bot is running...")
 
-    # Start the bot - this will create the event loop
-    application.run_polling()
+    # Start scheduler in background
+    asyncio.create_task(process_scheduled_messages(application))
 
-if __name__ == "__main__":
-    main()
+    # Start the bot
+    application.run_polling()
