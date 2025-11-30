@@ -1,3 +1,5 @@
+[**Chat Now Click Here 😁**](https://t.me/NGL_Message_bot)
+
 # 🤖 NGL Telegram Assistant Bot
 
 A powerful and feature-rich Telegram bot for sending anonymous messages to NGL links with AI-powered message generation and advanced management capabilities.
