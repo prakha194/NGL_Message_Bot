@@ -869,10 +869,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(error_handler)
 
-    print("Bot is running...")
-
-    # Start scheduler in background
-    asyncio.create_task(process_scheduled_messages(application))
+    print("Bot is running...")  
 
     # Start the bot
     application.run_polling()
