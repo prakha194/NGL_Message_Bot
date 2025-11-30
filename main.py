@@ -217,15 +217,17 @@ def save_scheduled_message(user_id, ngl_link, messages, scheduled_time):
         cursor = conn.cursor()
         messages_json = '\n'.join(messages)
         
-        # Convert to UTC before storing
-        scheduled_time_utc = scheduled_time.astimezone(pytz.UTC)
+        # Store in database in proper SQLite datetime format (local time)
+        scheduled_time_str = scheduled_time.strftime('%Y-%m-%d %H:%M:%S')
         
         cursor.execute(
             'INSERT INTO scheduled_messages (user_id, ngl_link, messages, scheduled_time) VALUES (?, ?, ?, ?)',
-            (user_id, ngl_link, messages_json, scheduled_time_utc)
+            (user_id, ngl_link, messages_json, scheduled_time_str)
         )
         conn.commit()
         conn.close()
+        
+        print(f"💾 Saved scheduled message for {scheduled_time_str}")
         return True
     except Exception as e:
         print(f"Save scheduled error: {e}")
@@ -237,16 +239,19 @@ def get_scheduled_messages():
         conn = sqlite3.connect('ngl_bot.db')
         cursor = conn.cursor()
         
-        # Get current time in UTC for database comparison
-        current_time_utc = datetime.utcnow()
+        # Get current time in the correct format for SQLite comparison
+        current_time = get_current_time()
+        current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
         
         cursor.execute('''
             SELECT * FROM scheduled_messages 
             WHERE status = 'scheduled' AND scheduled_time <= ?
-        ''', (current_time_utc,))
+        ''', (current_time_str,))
         
         messages = cursor.fetchall()
         conn.close()
+        
+        print(f"🔍 Database query: Found {len(messages)} messages to send (current time: {current_time_str})")
         return messages
     except Exception as e:
         print(f"Get scheduled error: {e}")
@@ -320,14 +325,14 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.execute('SELECT last_reset FROM users WHERE user_id = ?', (user_id,))
             result = cursor.fetchone()
             conn.close()
-            
+
             if result:
                 last_reset = datetime.fromisoformat(result[0])
                 time_passed = get_current_time() - last_reset
                 time_remaining = timedelta(hours=24) - time_passed
                 hours_left = int(time_remaining.total_seconds() // 3600)
                 minutes_left = int((time_remaining.total_seconds() % 3600) // 60)
-                
+
                 await update.message.reply_text(f"❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\n⏰ Time remaining: {hours_left}h {minutes_left}m\n\nNeed help? Contact admin!")
             else:
                 await update.message.reply_text("❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\nNeed help? Contact admin!")
@@ -662,14 +667,14 @@ async def send_messages_process(update: Update, context: ContextTypes.DEFAULT_TY
             cursor.execute('SELECT last_reset FROM users WHERE user_id = ?', (user_id,))
             result = cursor.fetchone()
             conn.close()
-            
+
             if result:
                 last_reset = datetime.fromisoformat(result[0])
                 time_passed = get_current_time() - last_reset
                 time_remaining = timedelta(hours=24) - time_passed
                 hours_left = int(time_remaining.total_seconds() // 3600)
                 minutes_left = int((time_remaining.total_seconds() % 3600) // 60)
-                
+
                 await query.edit_message_text(f"❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\n⏰ Time remaining: {hours_left}h {minutes_left}m\n\nNeed help? Contact admin!")
             else:
                 await query.edit_message_text("❌ Daily limit exceeded! You can only send 30 messages per 24 hours.\n\nNeed help? Contact admin!")
@@ -761,9 +766,9 @@ async def track_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show scheduled messages first
     if scheduled_messages:
         track_text += "⏰ Scheduled Messages:\n\n"
-        for i, (link, messages_text, scheduled_time, created_at) in enumerate(scheduled_messages):
+        for i, (link, messages_text, scheduled_time_str, created_at) in enumerate(scheduled_messages):
             messages = messages_text.split('\n')
-            scheduled_dt = datetime.fromisoformat(scheduled_time).astimezone(TIMEZONE)
+            scheduled_dt = datetime.strptime(scheduled_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=TIMEZONE)
             time_left = scheduled_dt - current_time
             hours_left = max(0, int(time_left.total_seconds() // 3600))
             minutes_left = max(0, int((time_left.total_seconds() % 3600) // 60))
@@ -794,46 +799,44 @@ async def process_scheduled_messages(application):
     while True:
         try:
             current_time = get_current_time()
-            current_time_utc = datetime.utcnow()
             scheduled_messages = get_scheduled_messages()
             
-            print(f"🔍 Checking scheduled messages at {current_time}. UTC: {current_time_utc}. Found: {len(scheduled_messages)}")
+            print(f"⏰ Scheduler check at: {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Found {len(scheduled_messages)} messages to send")
             
             for msg in scheduled_messages:
-                msg_id, user_id, ngl_link, messages_text, scheduled_time, status, created_at = msg
-                scheduled_dt_utc = datetime.fromisoformat(scheduled_time).replace(tzinfo=pytz.UTC)
-                scheduled_dt_local = scheduled_dt_utc.astimezone(TIMEZONE)
+                msg_id, user_id, ngl_link, messages_text, scheduled_time_str, status, created_at = msg
+                
+                # Convert stored time back to datetime for display
+                scheduled_dt = datetime.strptime(scheduled_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=TIMEZONE)
+                
+                print(f"🚀 Processing message scheduled for: {scheduled_dt.strftime('%Y-%m-%d %H:%M:%S')}")
 
-                print(f"📅 Scheduled (UTC): {scheduled_dt_utc}, Current (UTC): {current_time_utc}, Should send: {scheduled_dt_utc <= current_time_utc}")
+                messages = messages_text.split('\n')
 
-                # Check if it's time to send (using UTC for comparison)
-                if scheduled_dt_utc <= current_time_utc:
-                    messages = messages_text.split('\n')
-                    print(f"🚀 Sending {len(messages)} scheduled messages")
+                # Send messages
+                success_count = 0
+                for i, message in enumerate(messages):
+                    if i > 0:
+                        time.sleep(random.uniform(2, 5))
+                    success = send_ngl_message(ngl_link, message)
+                    if success:
+                        success_count += 1
+                    track_message(user_id, ngl_link, message, "success" if success else "failed")
 
-                    # Send messages
-                    success_count = 0
-                    for i, message in enumerate(messages):
-                        if i > 0:
-                            time.sleep(random.uniform(2, 5))
-                        success = send_ngl_message(ngl_link, message)
-                        if success:
-                            success_count += 1
-                        track_message(user_id, ngl_link, message, "success" if success else "failed")
+                # Update status
+                update_scheduled_status(msg_id, 'completed')
 
-                    # Update status
-                    update_scheduled_status(msg_id, 'completed')
-
-                    # Notify admin
-                    report_text = f"""
+                # Notify admin
+                report_text = f"""
 ⏰ Scheduled Messages Sent:
 • Link: {ngl_link}
 • Messages: {len(messages)}
 • Successful: {success_count}
-• Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
+• Scheduled Time: {scheduled_dt.strftime('%Y/%m/%d-%I:%M-%p')}
+• Actual Send Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
 """
-                    await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
-                    print(f"✅ Scheduled messages sent successfully: {success_count}/{len(messages)}")
+                await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
+                print(f"✅ Scheduled messages sent successfully: {success_count}/{len(messages)}")
 
             await asyncio.sleep(30)  # Check every 30 seconds
         except Exception as e:
