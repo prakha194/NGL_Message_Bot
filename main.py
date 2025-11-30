@@ -216,9 +216,13 @@ def save_scheduled_message(user_id, ngl_link, messages, scheduled_time):
         conn = sqlite3.connect('ngl_bot.db')
         cursor = conn.cursor()
         messages_json = '\n'.join(messages)
+        
+        # Convert to UTC before storing
+        scheduled_time_utc = scheduled_time.astimezone(pytz.UTC)
+        
         cursor.execute(
             'INSERT INTO scheduled_messages (user_id, ngl_link, messages, scheduled_time) VALUES (?, ?, ?, ?)',
-            (user_id, ngl_link, messages_json, scheduled_time)
+            (user_id, ngl_link, messages_json, scheduled_time_utc)
         )
         conn.commit()
         conn.close()
@@ -232,10 +236,15 @@ def get_scheduled_messages():
     try:
         conn = sqlite3.connect('ngl_bot.db')
         cursor = conn.cursor()
+        
+        # Get current time in UTC for database comparison
+        current_time_utc = datetime.utcnow()
+        
         cursor.execute('''
             SELECT * FROM scheduled_messages 
-            WHERE status = 'scheduled'
-        ''')
+            WHERE status = 'scheduled' AND scheduled_time <= ?
+        ''', (current_time_utc,))
+        
         messages = cursor.fetchall()
         conn.close()
         return messages
@@ -785,15 +794,22 @@ async def process_scheduled_messages(application):
     while True:
         try:
             current_time = get_current_time()
+            current_time_utc = datetime.utcnow()
             scheduled_messages = get_scheduled_messages()
+            
+            print(f"🔍 Checking scheduled messages at {current_time}. UTC: {current_time_utc}. Found: {len(scheduled_messages)}")
             
             for msg in scheduled_messages:
                 msg_id, user_id, ngl_link, messages_text, scheduled_time, status, created_at = msg
-                scheduled_dt = datetime.fromisoformat(scheduled_time).astimezone(TIMEZONE)
+                scheduled_dt_utc = datetime.fromisoformat(scheduled_time).replace(tzinfo=pytz.UTC)
+                scheduled_dt_local = scheduled_dt_utc.astimezone(TIMEZONE)
 
-                # Check if it's time to send (using timezone)
-                if scheduled_dt <= current_time:
+                print(f"📅 Scheduled (UTC): {scheduled_dt_utc}, Current (UTC): {current_time_utc}, Should send: {scheduled_dt_utc <= current_time_utc}")
+
+                # Check if it's time to send (using UTC for comparison)
+                if scheduled_dt_utc <= current_time_utc:
                     messages = messages_text.split('\n')
+                    print(f"🚀 Sending {len(messages)} scheduled messages")
 
                     # Send messages
                     success_count = 0
@@ -817,6 +833,7 @@ async def process_scheduled_messages(application):
 • Time: {current_time.strftime('%Y/%m/%d-%I:%M-%p')}
 """
                     await application.bot.send_message(chat_id=ADMIN_ID, text=report_text)
+                    print(f"✅ Scheduled messages sent successfully: {success_count}/{len(messages)}")
 
             await asyncio.sleep(30)  # Check every 30 seconds
         except Exception as e:
